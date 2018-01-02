@@ -11027,6 +11027,29 @@ class basic_json
         return is_object() ? m_value.object->count(std::forward<KeyT>(key)) : 0;
     }
 
+    /*!
+    @brief returns if a key is in a JSON object
+
+    Returns true if an element with key @a key exists.
+
+    @note This method always returns `false` when executed on a JSON type that is
+          not an object.
+
+    @param[in] key key value of the element to check
+
+    @return `true` if an element with the given key exists, `false` if not.
+
+    @complexity Logarithmic in the size of the JSON object.
+
+    @since added for Raumfeld
+    */
+    template<typename KeyT>
+    bool has(KeyT&& key) const
+    {
+        // return false for all nonobject types
+        return is_object() ? m_value.object->find(std::forward<KeyT>(key)) != m_value.object->end() : false;
+    }
+
     /// @}
 
 
