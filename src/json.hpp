@@ -9095,6 +9095,26 @@ class basic_json
     }
 
     /*!
+    @brief convenience wrapper for dump() that requests most compact form
+
+    @since added for Raumfeld
+    */
+    string_t dumpCompact() const
+    {
+        return dump();
+    }
+
+    /*!
+    @brief convenience wrapper for dump() that requests human readable form
+
+    @since added for Raumfeld
+    */
+    string_t dumpPretty() const
+    {
+        return dump(2);
+    }
+
+    /*!
     @brief return the type of the JSON value (explicit)
 
     Return the type of the JSON value as a value from the @ref value_t
