@@ -1,11 +1,12 @@
 /*
     __ _____ _____ _____
  __|  |   __|     |   | |  JSON for Modern C++ (test suite)
-|  |  |__   |  |  | | | |  version 3.0.1
+|  |  |__   |  |  | | | |  version 3.6.1
 |_____|_____|_____|_|___|  https://github.com/nlohmann/json
 
 Licensed under the MIT License <http://opensource.org/licenses/MIT>.
-Copyright (c) 2013-2017 Niels Lohmann <http://nlohmann.me>.
+SPDX-License-Identifier: MIT
+Copyright (c) 2013-2019 Niels Lohmann <http://nlohmann.me>.
 
 Permission is hereby  granted, free of charge, to any  person obtaining a copy
 of this software and associated  documentation files (the "Software"), to deal
@@ -26,15 +27,91 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "doctest_compatibility.h"
+DOCTEST_GCC_SUPPRESS_WARNING("-Wfloat-equal")
+
+// for some reason including this after the json header leads to linker errors with VS 2017...
+#include <locale>
 
 #define private public
-#include "json.hpp"
+#include <nlohmann/json.hpp>
 using nlohmann::json;
+#undef private
 
 #include <fstream>
+#include <sstream>
 #include <list>
 #include <cstdio>
+
+#if (defined(__cplusplus) && __cplusplus >= 201703L) || (defined(_HAS_CXX17) && _HAS_CXX17 == 1) // fix for issue #464
+    #define JSON_HAS_CPP_17
+#endif
+
+#ifdef JSON_HAS_CPP_17
+    #include <variant>
+#endif
+
+#include "fifo_map.hpp"
+
+/////////////////////////////////////////////////////////////////////
+// for #972
+/////////////////////////////////////////////////////////////////////
+
+template<class K, class V, class dummy_compare, class A>
+using my_workaround_fifo_map = nlohmann::fifo_map<K, V, nlohmann::fifo_map_compare<K>, A>;
+using my_json = nlohmann::basic_json<my_workaround_fifo_map>;
+
+/////////////////////////////////////////////////////////////////////
+// for #977
+/////////////////////////////////////////////////////////////////////
+
+namespace ns
+{
+struct foo
+{
+    int x;
+};
+
+template <typename, typename SFINAE = void>
+struct foo_serializer;
+
+template<typename T>
+struct foo_serializer<T, typename std::enable_if<std::is_same<foo, T>::value>::type>
+{
+    template <typename BasicJsonType>
+    static void to_json(BasicJsonType& j, const T& value)
+    {
+        j = BasicJsonType{{"x", value.x}};
+    }
+    template <typename BasicJsonType>
+    static void from_json(const BasicJsonType& j, T& value)     // !!!
+    {
+        nlohmann::from_json(j.at("x"), value.x);
+    }
+};
+
+template<typename T>
+struct foo_serializer < T, typename std::enable_if < !std::is_same<foo, T>::value >::type >
+{
+    template <typename BasicJsonType>
+    static void to_json(BasicJsonType& j, const T& value) noexcept
+    {
+        ::nlohmann::to_json(j, value);
+    }
+    template <typename BasicJsonType>
+    static void from_json(const BasicJsonType& j, T& value)   //!!!
+    {
+        ::nlohmann::from_json(j, value);
+    }
+};
+}
+
+using foo_json = nlohmann::basic_json<std::map, std::vector, std::string, bool, std::int64_t,
+      std::uint64_t, double, std::allocator, ns::foo_serializer>;
+
+/////////////////////////////////////////////////////////////////////
+// for #805
+/////////////////////////////////////////////////////////////////////
 
 namespace
 {
@@ -50,7 +127,38 @@ struct nocopy
         j = {{"val", n.val}};
     }
 };
+
+struct Data
+{
+    Data() = default;
+    Data(const std::string& a_, const std::string b_) : a(a_), b(b_) {}
+    std::string a {};
+    std::string b {};
+};
+
+void from_json(const json& j, Data& data)
+{
+    j["a"].get_to(data.a);
+    j["b"].get_to(data.b);
 }
+
+bool operator==(Data const& lhs, Data const& rhs)
+{
+    return lhs.a == rhs.a && lhs.b == rhs.b;
+}
+
+//bool operator!=(Data const& lhs, Data const& rhs)
+//{
+//    return !(lhs == rhs);
+//}
+}
+
+/////////////////////////////////////////////////////////////////////
+// for #1021
+/////////////////////////////////////////////////////////////////////
+
+using float_json = nlohmann::basic_json<std::map, std::vector, std::string, bool, std::int64_t, std::uint64_t, float>;
+
 
 TEST_CASE("regression tests")
 {
@@ -67,19 +175,19 @@ TEST_CASE("regression tests")
 
     SECTION("issue #70 - Handle infinity and NaN cases")
     {
-        /*
+        // previously, NAN/INFINITY created a null value; now, the values are
+        // properly stored, but are dumped as "null"
         SECTION("NAN value")
         {
-            CHECK(json(NAN) == json());
-            CHECK(json(json::number_float_t(NAN)) == json());
+            CHECK(json(NAN).dump() == "null");
+            CHECK(json(json::number_float_t(NAN)).dump() == "null");
         }
 
         SECTION("infinity")
         {
-            CHECK(json(INFINITY) == json());
-            CHECK(json(json::number_float_t(INFINITY)) == json());
+            CHECK(json(INFINITY).dump() == "null");
+            CHECK(json(json::number_float_t(INFINITY)).dump() == "null");
         }
-        */
 
         // With 3.0.0, the semantics of this changed: NAN and infinity are
         // stored properly inside the JSON value (no exception or conversion
@@ -185,7 +293,7 @@ TEST_CASE("regression tests")
         int number = j["Number"];
         CHECK(number == 100);
         float foo = j["Foo"];
-        CHECK(foo == Approx(42.42));
+        CHECK(static_cast<double>(foo) == Approx(42.42));
     }
 
     SECTION("issue #89 - nonstandard integer type")
@@ -195,8 +303,7 @@ TEST_CASE("regression tests")
             nlohmann::basic_json<std::map, std::vector, std::string, bool, int32_t, uint32_t, float>;
         custom_json j;
         j["int_1"] = 1;
-        // we need to cast to int to compile with Catch - the value is int32_t
-        CHECK(static_cast<int>(j["int_1"]) == 1);
+        CHECK(j["int_1"] == 1);
 
         // tests for correct handling of non-standard integers that overflow the type selected by the user
 
@@ -556,7 +663,7 @@ TEST_CASE("regression tests")
                     "test/data/regression/working_file.json"
                 })
         {
-            CAPTURE(filename);
+            CAPTURE(filename)
             json j;
             std::ifstream f(filename);
             CHECK_NOTHROW(f >> j);
@@ -569,10 +676,11 @@ TEST_CASE("regression tests")
                 {
                     "test/data/regression/floats.json",
                     "test/data/regression/signed_ints.json",
-                    "test/data/regression/unsigned_ints.json"
+                    "test/data/regression/unsigned_ints.json",
+                    "test/data/regression/small_signed_ints.json"
                 })
         {
-            CAPTURE(filename);
+            CAPTURE(filename)
             json j;
             std::ifstream f(filename);
             CHECK_NOTHROW(f >> j);
@@ -593,11 +701,69 @@ TEST_CASE("regression tests")
                           "[json.exception.out_of_range.406] number overflow parsing '22e2222'");
     }
 
+    SECTION("issue #360 - Loss of precision when serializing <double>")
+    {
+        auto check_roundtrip = [](double number)
+        {
+            CAPTURE(number)
+
+            json j = number;
+            CHECK(j.is_number_float());
+
+            std::stringstream ss;
+            ss << j;
+
+            CHECK_NOTHROW(ss >> j);
+            CHECK(j.is_number_float());
+            CHECK(j.get<json::number_float_t>() == number);
+        };
+
+        check_roundtrip(100000000000.1236);
+        check_roundtrip((std::numeric_limits<json::number_float_t>::max)());
+
+        // Some more numbers which fail to roundtrip when serialized with digits10 significand digits (instead of max_digits10)
+        check_roundtrip(1.541888611948064e-17);
+        check_roundtrip(5.418771028591015e-16);
+        check_roundtrip(9.398685592608595e-15);
+        check_roundtrip(8.826843952762347e-14);
+        check_roundtrip(8.143291313475335e-13);
+        check_roundtrip(4.851328172762508e-12);
+        check_roundtrip(6.677850998084358e-11);
+        check_roundtrip(3.995398518174525e-10);
+        check_roundtrip(1.960452605645124e-9);
+        check_roundtrip(3.551812586302883e-8);
+        check_roundtrip(2.947988411689261e-7);
+        check_roundtrip(8.210166748056192e-6);
+        check_roundtrip(6.104889704266753e-5);
+        check_roundtrip(0.0008629954631330876);
+        check_roundtrip(0.004936993881051611);
+        check_roundtrip(0.08309725102608073);
+        check_roundtrip(0.5210494268499783);
+        check_roundtrip(6.382927930939767);
+        check_roundtrip(59.94947245358671);
+        check_roundtrip(361.0838651266122);
+        check_roundtrip(4678.354596181877);
+        check_roundtrip(61412.17658956043);
+        check_roundtrip(725696.0799057782);
+        check_roundtrip(2811732.583399828);
+        check_roundtrip(30178351.07533605);
+        check_roundtrip(689684880.3235844);
+        check_roundtrip(5714887673.555147);
+        check_roundtrip(84652038821.18808);
+        check_roundtrip(156510583431.7721);
+        check_roundtrip(5938450569021.732);
+        check_roundtrip(83623297654460.33);
+        check_roundtrip(701466573254773.6);
+        check_roundtrip(1369013370304513);
+        check_roundtrip(96963648023094720);
+        check_roundtrip(3.478237409280108e+17);
+    }
+
     SECTION("issue #366 - json::parse on failed stream gets stuck")
     {
         std::ifstream f("file_not_found.json");
         CHECK_THROWS_AS(json::parse(f), json::parse_error&);
-        CHECK_THROWS_WITH(json::parse(f), "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+        CHECK_THROWS_WITH(json::parse(f), "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
     }
 
     SECTION("issue #367 - calling stream at EOF")
@@ -613,7 +779,7 @@ TEST_CASE("regression tests")
         // a parse error because of the EOF.
         CHECK_THROWS_AS(ss >> j, json::parse_error&);
         CHECK_THROWS_WITH(ss >> j,
-                          "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                          "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
     }
 
     SECTION("issue #367 - behavior of operator>> should more closely resemble that of built-in overloads")
@@ -624,7 +790,7 @@ TEST_CASE("regression tests")
             json j;
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("(whitespace)")
@@ -634,7 +800,7 @@ TEST_CASE("regression tests")
             json j;
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("one value")
@@ -647,7 +813,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("one value + whitespace")
@@ -660,7 +826,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("whitespace + one value")
@@ -673,7 +839,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("three values")
@@ -690,7 +856,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("literals without whitespace")
@@ -709,7 +875,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("example from #529")
@@ -724,7 +890,7 @@ TEST_CASE("regression tests")
 
             CHECK_THROWS_AS(ss >> j, json::parse_error&);
             CHECK_THROWS_WITH(ss >> j,
-                              "[json.exception.parse_error.101] parse error at 1: syntax error - unexpected end of input; expected '[', '{', or a literal");
+                              "[json.exception.parse_error.101] parse error at line 1, column 1: syntax error while parsing value - unexpected end of input; expected '[', '{', or a literal");
         }
 
         SECTION("second example from #529")
@@ -742,7 +908,7 @@ TEST_CASE("regression tests")
             size_t i = 0;
             while (stream.peek() != EOF)
             {
-                CAPTURE(i);
+                CAPTURE(i)
                 CHECK_NOTHROW(stream >> val);
 
                 CHECK(i < 2);
@@ -785,7 +951,7 @@ TEST_CASE("regression tests")
     {
         json j = json::parse("166020696663385964490");
         CHECK(j.is_number_float());
-        CHECK(j.dump() == "1.66020696663386e+20");
+        CHECK(j.get<json::number_float_t>() == 166020696663385964490.0);
     }
 
     SECTION("issue #405 - Heap-buffer-overflow (OSS-Fuzz issue 342)")
@@ -794,7 +960,7 @@ TEST_CASE("regression tests")
         std::vector<uint8_t> vec {0x65, 0xf5, 0x0a, 0x48, 0x21};
         CHECK_THROWS_AS(json::from_cbor(vec), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec),
-                          "[json.exception.parse_error.110] parse error at 6: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 6: syntax error while parsing CBOR string: unexpected end of input");
     }
 
     SECTION("issue #407 - Heap-buffer-overflow (OSS-Fuzz issue 343)")
@@ -803,31 +969,31 @@ TEST_CASE("regression tests")
         std::vector<uint8_t> vec1 {0xcb, 0x8f, 0x0a};
         CHECK_THROWS_AS(json::from_msgpack(vec1), json::parse_error&);
         CHECK_THROWS_WITH(json::from_msgpack(vec1),
-                          "[json.exception.parse_error.110] parse error at 4: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 4: syntax error while parsing MessagePack number: unexpected end of input");
 
         // related test case: incomplete float32
         std::vector<uint8_t> vec2 {0xca, 0x8f, 0x0a};
         CHECK_THROWS_AS(json::from_msgpack(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_msgpack(vec2),
-                          "[json.exception.parse_error.110] parse error at 4: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 4: syntax error while parsing MessagePack number: unexpected end of input");
 
         // related test case: incomplete Half-Precision Float (CBOR)
         std::vector<uint8_t> vec3 {0xf9, 0x8f};
         CHECK_THROWS_AS(json::from_cbor(vec3), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec3),
-                          "[json.exception.parse_error.110] parse error at 3: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 3: syntax error while parsing CBOR number: unexpected end of input");
 
         // related test case: incomplete Single-Precision Float (CBOR)
         std::vector<uint8_t> vec4 {0xfa, 0x8f, 0x0a};
         CHECK_THROWS_AS(json::from_cbor(vec4), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec4),
-                          "[json.exception.parse_error.110] parse error at 4: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 4: syntax error while parsing CBOR number: unexpected end of input");
 
         // related test case: incomplete Double-Precision Float (CBOR)
         std::vector<uint8_t> vec5 {0xfb, 0x8f, 0x0a};
         CHECK_THROWS_AS(json::from_cbor(vec5), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec5),
-                          "[json.exception.parse_error.110] parse error at 4: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 4: syntax error while parsing CBOR number: unexpected end of input");
     }
 
     SECTION("issue #408 - Heap-buffer-overflow (OSS-Fuzz issue 344)")
@@ -836,7 +1002,7 @@ TEST_CASE("regression tests")
         std::vector<uint8_t> vec1 {0x87};
         CHECK_THROWS_AS(json::from_msgpack(vec1), json::parse_error&);
         CHECK_THROWS_WITH(json::from_msgpack(vec1),
-                          "[json.exception.parse_error.110] parse error at 2: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 2: syntax error while parsing MessagePack string: unexpected end of input");
 
         // more test cases for MessagePack
         for (auto b :
@@ -870,10 +1036,10 @@ TEST_CASE("regression tests")
         std::vector<uint8_t> vec2;
         CHECK_THROWS_AS(json::from_cbor(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec2),
-                          "[json.exception.parse_error.110] parse error at 1: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 1: syntax error while parsing CBOR value: unexpected end of input");
         CHECK_THROWS_AS(json::from_msgpack(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_msgpack(vec2),
-                          "[json.exception.parse_error.110] parse error at 1: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 1: syntax error while parsing MessagePack value: unexpected end of input");
     }
 
     SECTION("issue #411 - Heap-buffer-overflow (OSS-Fuzz issue 366)")
@@ -882,19 +1048,19 @@ TEST_CASE("regression tests")
         std::vector<uint8_t> vec1 {0x7f};
         CHECK_THROWS_AS(json::from_cbor(vec1), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec1),
-                          "[json.exception.parse_error.110] parse error at 2: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 2: syntax error while parsing CBOR string: unexpected end of input");
 
         // related test case: empty array (indefinite length)
         std::vector<uint8_t> vec2 {0x9f};
         CHECK_THROWS_AS(json::from_cbor(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec2),
-                          "[json.exception.parse_error.110] parse error at 2: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 2: syntax error while parsing CBOR value: unexpected end of input");
 
         // related test case: empty map (indefinite length)
         std::vector<uint8_t> vec3 {0xbf};
         CHECK_THROWS_AS(json::from_cbor(vec3), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec3),
-                          "[json.exception.parse_error.110] parse error at 2: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 2: syntax error while parsing CBOR string: unexpected end of input");
     }
 
     SECTION("issue #412 - Heap-buffer-overflow (OSS-Fuzz issue 367)")
@@ -922,25 +1088,25 @@ TEST_CASE("regression tests")
         };
         CHECK_THROWS_AS(json::from_cbor(vec), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec),
-                          "[json.exception.parse_error.113] parse error at 2: expected a CBOR string; last byte: 0x98");
+                          "[json.exception.parse_error.113] parse error at byte 2: syntax error while parsing CBOR string: expected length specification (0x60-0x7B) or indefinite string type (0x7F); last byte: 0x98");
 
         // related test case: nonempty UTF-8 string (indefinite length)
         std::vector<uint8_t> vec1 {0x7f, 0x61, 0x61};
         CHECK_THROWS_AS(json::from_cbor(vec1), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec1),
-                          "[json.exception.parse_error.110] parse error at 4: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 4: syntax error while parsing CBOR string: unexpected end of input");
 
         // related test case: nonempty array (indefinite length)
         std::vector<uint8_t> vec2 {0x9f, 0x01};
         CHECK_THROWS_AS(json::from_cbor(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec2),
-                          "[json.exception.parse_error.110] parse error at 3: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 3: syntax error while parsing CBOR value: unexpected end of input");
 
         // related test case: nonempty map (indefinite length)
         std::vector<uint8_t> vec3 {0xbf, 0x61, 0x61, 0x01};
         CHECK_THROWS_AS(json::from_cbor(vec3), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec3),
-                          "[json.exception.parse_error.110] parse error at 5: unexpected end of input");
+                          "[json.exception.parse_error.110] parse error at byte 5: syntax error while parsing CBOR string: unexpected end of input");
     }
 
     SECTION("issue #414 - compare with literal 0)")
@@ -951,12 +1117,12 @@ TEST_CASE("regression tests")
     CHECK_FALSE((json(v) != v));\
     CHECK_FALSE((v != json(v)));
 
-        CHECK_TYPE(nullptr);
-        CHECK_TYPE(0);
-        CHECK_TYPE(0u);
-        CHECK_TYPE(0L);
-        CHECK_TYPE(0.0);
-        CHECK_TYPE("");
+        CHECK_TYPE(nullptr)
+        CHECK_TYPE(0)
+        CHECK_TYPE(0u)
+        CHECK_TYPE(0L)
+        CHECK_TYPE(0.0)
+        CHECK_TYPE("")
 
 #undef CHECK_TYPE
     }
@@ -975,7 +1141,7 @@ TEST_CASE("regression tests")
         };
         CHECK_THROWS_AS(json::from_cbor(vec1), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec1),
-                          "[json.exception.parse_error.113] parse error at 13: expected a CBOR string; last byte: 0xB4");
+                          "[json.exception.parse_error.113] parse error at byte 13: syntax error while parsing CBOR string: expected length specification (0x60-0x7B) or indefinite string type (0x7F); last byte: 0xB4");
 
         // related test case: double-precision
         std::vector<uint8_t> vec2
@@ -989,7 +1155,7 @@ TEST_CASE("regression tests")
         };
         CHECK_THROWS_AS(json::from_cbor(vec2), json::parse_error&);
         CHECK_THROWS_WITH(json::from_cbor(vec2),
-                          "[json.exception.parse_error.113] parse error at 13: expected a CBOR string; last byte: 0xB4");
+                          "[json.exception.parse_error.113] parse error at byte 13: syntax error while parsing CBOR string: expected length specification (0x60-0x7B) or indefinite string type (0x7F); last byte: 0xB4");
     }
 
     SECTION("issue #452 - Heap-buffer-overflow (OSS-Fuzz issue 585)")
@@ -1085,41 +1251,6 @@ TEST_CASE("regression tests")
 
         CHECK(j["bool_vector"].dump() == "[false,true,false,false]");
     }
-
-    /* NOTE: m_line_buffer is not used any more
-    SECTION("issue #495 - fill_line_buffer incorrectly tests m_stream for eof but not fail or bad bits")
-    {
-        SECTION("setting failbit")
-        {
-            std::stringstream ss;
-            ss << "[1,2,3\n,4,5]";
-
-            json::lexer l(ss);
-
-            CHECK(l.m_line_buffer == "[1,2,3\n");
-
-            l.m_stream->setstate(std::ios_base::failbit);
-
-            CHECK_THROWS_AS(l.fill_line_buffer(), json::parse_error&);
-            CHECK_THROWS_WITH(l.fill_line_buffer(), "[json.exception.parse_error.111] parse error: bad input stream");
-        }
-
-        SECTION("setting badbit")
-        {
-            std::stringstream ss;
-            ss << "[1,2,3\n,4,5]";
-
-            json::lexer l(ss);
-
-            CHECK(l.m_line_buffer == "[1,2,3\n");
-
-            l.m_stream->setstate(std::ios_base::badbit);
-
-            CHECK_THROWS_AS(l.fill_line_buffer(), json::parse_error&);
-            CHECK_THROWS_WITH(l.fill_line_buffer(), "[json.exception.parse_error.111] parse error: bad input stream");
-        }
-    }
-     */
 
     SECTION("issue #504 - assertion error (OSS-Fuzz 856)")
     {
@@ -1311,7 +1442,7 @@ TEST_CASE("regression tests")
         uint8_t key1[] = { 103, 92, 117, 48, 48, 48, 55, 92, 114, 215, 126, 214, 95, 92, 34, 174, 40, 71, 38, 174, 40, 71, 38, 223, 134, 247, 127 };
         std::string key1_str(key1, key1 + sizeof(key1) / sizeof(key1[0]));
         json j = key1_str;
-        CHECK_THROWS_AS(j.dump(), json::type_error);
+        CHECK_THROWS_AS(j.dump(), json::type_error&);
         CHECK_THROWS_WITH(j.dump(), "[json.exception.type_error.316] invalid UTF-8 byte at index 10: 0x7E");
     }
 
@@ -1334,20 +1465,347 @@ TEST_CASE("regression tests")
             }
         })"_json;
 
-        CHECK_THROWS_AS(model.patch(R"([{"op": "move",
-                         "from": "/one/two/three",
-                         "path": "/a/b/c"}])"_json), json::out_of_range);
-        CHECK_THROWS_WITH(model.patch(R"([{"op": "move",
-                         "from": "/one/two/three",
-                         "path": "/a/b/c"}])"_json),
+        auto p1 = R"([{"op": "move",
+                       "from": "/one/two/three",
+                       "path": "/a/b/c"}])"_json;
+        CHECK_THROWS_AS(model.patch(p1), json::out_of_range&);
+
+        auto p2 = R"([{"op": "move",
+                       "from": "/one/two/three",
+                       "path": "/a/b/c"}])"_json;
+        CHECK_THROWS_WITH(model.patch(p2),
                           "[json.exception.out_of_range.403] key 'a' not found");
 
-        CHECK_THROWS_AS(model.patch(R"([{"op": "copy",
+        auto p3 = R"([{"op": "copy",
+                       "from": "/one/two/three",
+                       "path": "/a/b/c"}])"_json;
+        CHECK_THROWS_AS(model.patch(p3), json::out_of_range&);
+
+        auto p4 = R"([{"op": "copy",
                                  "from": "/one/two/three",
-                                 "path": "/a/b/c"}])"_json), json::out_of_range);
-        CHECK_THROWS_WITH(model.patch(R"([{"op": "copy",
-                                 "from": "/one/two/three",
-                                 "path": "/a/b/c"}])"_json),
+                                 "path": "/a/b/c"}])"_json;
+        CHECK_THROWS_WITH(model.patch(p4),
                           "[json.exception.out_of_range.403] key 'a' not found");
     }
+
+    SECTION("issue #961 - incorrect parsing of indefinite length CBOR strings")
+    {
+        std::vector<uint8_t> v_cbor =
+        {
+            0x7F,
+            0x64,
+            'a', 'b', 'c', 'd',
+            0x63,
+            '1', '2', '3',
+            0xFF
+        };
+        json j = json::from_cbor(v_cbor);
+        CHECK(j == "abcd123");
+    }
+
+    SECTION("issue #962 - Timeout (OSS-Fuzz 6034)")
+    {
+        std::vector<uint8_t> v_ubjson = {'[', '$', 'Z', '#', 'L', 0x78, 0x28, 0x00, 0x68, 0x28, 0x69, 0x69, 0x17};
+        CHECK_THROWS_AS(json::from_ubjson(v_ubjson), json::out_of_range&);
+        //CHECK_THROWS_WITH(json::from_ubjson(v_ubjson),
+        //                  "[json.exception.out_of_range.408] excessive array size: 8658170730974374167");
+
+        v_ubjson[0] = '{';
+        CHECK_THROWS_AS(json::from_ubjson(v_ubjson), json::out_of_range&);
+        //CHECK_THROWS_WITH(json::from_ubjson(v_ubjson),
+        //                  "[json.exception.out_of_range.408] excessive object size: 8658170730974374167");
+    }
+
+    SECTION("issue #971 - Add a SAX parser - late bug")
+    {
+        // a JSON text
+        auto text = R"(
+    {
+        "Image": {
+            "Width":  800,
+            "Height": 600,
+            "Title":  "View from 15th Floor",
+            "Thumbnail": {
+                "Url":    "http://www.example.com/image/481989943",
+                "Height": 125,
+                "Width":  100
+            },
+            "Animated" : false,
+            "IDs": [116, 943, 234, 38793]
+        }
+    }
+    )";
+
+        // define parser callback
+        json::parser_callback_t cb = [](int /*depth*/, json::parse_event_t event, json & parsed)
+        {
+            // skip object elements with key "Thumbnail"
+            if (event == json::parse_event_t::key and parsed == json("Thumbnail"))
+            {
+                return false;
+            }
+            else
+            {
+                return true;
+            }
+        };
+
+        // parse (with callback) and serialize JSON
+        json j_filtered = json::parse(text, cb);
+
+        CHECK(j_filtered == R"({"Image":{"Animated":false,"Height":600,"IDs":[116,943,234,38793], "Title":"View from 15th Floor","Width":800}})"_json);
+    }
+
+    SECTION("issue #972 - Segmentation fault on G++ when trying to assign json string literal to custom json type")
+    {
+        my_json foo = R"([1, 2, 3])"_json;
+    }
+
+    SECTION("issue #977 - Assigning between different json types")
+    {
+        foo_json lj = ns::foo{3};
+        ns::foo ff = lj;
+        CHECK(lj.is_object());
+        CHECK(lj.size() == 1);
+        CHECK(lj["x"] == 3);
+        CHECK(ff.x == 3);
+        nlohmann::json nj = lj;                // This line works as expected
+    }
+
+    SECTION("issue #1001 - Fix memory leak during parser callback")
+    {
+        auto geojsonExample = R"(
+          { "type": "FeatureCollection",
+            "features": [
+              { "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [102.0, 0.5]},
+                "properties": {"prop0": "value0"}
+                },
+              { "type": "Feature",
+                "geometry": {
+                  "type": "LineString",
+                  "coordinates": [
+                    [102.0, 0.0], [103.0, 1.0], [104.0, 0.0], [105.0, 1.0]
+                    ]
+                  },
+                "properties": {
+                  "prop0": "value0",
+                  "prop1": 0.0
+                  }
+                },
+              { "type": "Feature",
+                 "geometry": {
+                   "type": "Polygon",
+                   "coordinates": [
+                     [ [100.0, 0.0], [101.0, 0.0], [101.0, 1.0],
+                       [100.0, 1.0], [100.0, 0.0] ]
+                     ]
+                 },
+                 "properties": {
+                   "prop0": "value0",
+                   "prop1": {"this": "that"}
+                   }
+                 }
+               ]
+             })";
+
+        json::parser_callback_t cb = [&](int, json::parse_event_t event, json & parsed)
+        {
+            // skip uninteresting events
+            if (event == json::parse_event_t::value and !parsed.is_primitive())
+            {
+                return false;
+            }
+
+            switch (event)
+            {
+                case json::parse_event_t::key:
+                    {
+                        return true;
+                    }
+                case json::parse_event_t::value:
+                    {
+                        return false;
+                    }
+                case json::parse_event_t::object_start:
+                    {
+                        return true;
+                    }
+                case json::parse_event_t::object_end:
+                    {
+                        return false;
+                    }
+                case json::parse_event_t::array_start:
+                    {
+                        return true;
+                    }
+                case json::parse_event_t::array_end:
+                    {
+                        return false;
+                    }
+
+                default:
+                    {
+                        return true;
+                    }
+            }
+        };
+
+        auto j = json::parse(geojsonExample, cb, true);
+        CHECK(j == json());
+    }
+
+    SECTION("issue #1021 - to/from_msgpack only works with standard typization")
+    {
+        float_json j = 1000.0;
+        CHECK(float_json::from_cbor(float_json::to_cbor(j)) == j);
+        CHECK(float_json::from_msgpack(float_json::to_msgpack(j)) == j);
+        CHECK(float_json::from_ubjson(float_json::to_ubjson(j)) == j);
+
+        float_json j2 = {1000.0, 2000.0, 3000.0};
+        CHECK(float_json::from_ubjson(float_json::to_ubjson(j2, true, true)) == j2);
+    }
+
+    SECTION("issue #1045 - Using STL algorithms with JSON containers with expected results?")
+    {
+        json diffs = nlohmann::json::array();
+        json m1{{"key1", 42}};
+        json m2{{"key2", 42}};
+        auto p1 = m1.items();
+        auto p2 = m2.items();
+
+        using it_type = decltype(p1.begin());
+
+        std::set_difference(
+            p1.begin(), p1.end(),
+            p2.begin(), p2.end(),
+            std::inserter(diffs, diffs.end()), [&](const it_type & e1, const it_type & e2) -> bool
+        {
+            using comper_pair = std::pair<std::string, decltype(e1.value())>; // Trying to avoid unneeded copy
+            return comper_pair(e1.key(), e1.value()) < comper_pair(e2.key(), e2.value()); // Using pair comper
+        });
+
+        CHECK(diffs.size() == 1); // Note the change here, was 2
+    }
+
+#ifdef JSON_HAS_CPP_17
+    SECTION("issue #1292 - Serializing std::variant causes stack overflow")
+    {
+        static_assert(
+            not std::is_constructible<json, std::variant<int, float>>::value, "");
+    }
+#endif
+
+    SECTION("issue #1299 - compile error in from_json converting to container "
+            "with std::pair")
+    {
+        json j =
+        {
+            {"1", {{"a", "testa_1"}, {"b", "testb_1"}}},
+            {"2", {{"a", "testa_2"}, {"b", "testb_2"}}},
+            {"3", {{"a", "testa_3"}, {"b", "testb_3"}}},
+        };
+
+        std::map<std::string, Data> expected
+        {
+            {"1", {"testa_1", "testb_1"}},
+            {"2", {"testa_2", "testb_2"}},
+            {"3", {"testa_3", "testb_3"}},
+        };
+        const auto data = j.get<decltype(expected)>();
+        CHECK(expected == data);
+    }
+
+    SECTION("issue #1445 - buffer overflow in dumping invalid utf-8 strings")
+    {
+        SECTION("a bunch of -1, ensure_ascii=true")
+        {
+            json dump_test;
+            std::vector<char> data(300, -1);
+            std::vector<std::string> vec_string(300, "\\ufffd");
+            std::string s{data.data(), data.size()};
+            dump_test["1"] = s;
+            std::ostringstream os;
+            os << "{\"1\":\"";
+            std::copy( vec_string.begin(), vec_string.end(), std::ostream_iterator<std::string>(os));
+            os << "\"}";
+            s = dump_test.dump(-1, ' ', true, nlohmann::json::error_handler_t::replace);
+            CHECK(s == os.str());
+        }
+        SECTION("a bunch of -2, ensure_ascii=false")
+        {
+            json dump_test;
+            std::vector<char> data(500, -2);
+            std::vector<std::string> vec_string(500, "\xEF\xBF\xBD");
+            std::string s{data.data(), data.size()};
+            dump_test["1"] = s;
+            std::ostringstream os;
+            os << "{\"1\":\"";
+            std::copy( vec_string.begin(), vec_string.end(), std::ostream_iterator<std::string>(os));
+            os << "\"}";
+            s = dump_test.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            CHECK(s == os.str());
+        }
+        SECTION("test case in issue #1445")
+        {
+            nlohmann::json dump_test;
+            const int data[] =
+            {
+                109,  108,  103,  125,  -122, -53,  115,
+                18,   3,    0,    102,  19,   1,    15,
+                -110, 13,   -3,   -1,   -81,  32,   2,
+                0,    0,    0,    0,    0,    0,    0,
+                8,    0,    0,    0,    0,    0,    0,
+                0,    0,    0,    0,    0,    -80,  2,
+                0,    0,    96,   -118, 46,   -116, 46,
+                109,  -84,  -87,  108,  14,   109,  -24,
+                -83,  13,   -18,  -51,  -83,  -52,  -115,
+                14,   6,    32,   0,    0,    0,    0,
+                0,    0,    0,    0,    0,    0,    0,
+                64,   3,    0,    0,    0,    35,   -74,
+                -73,  55,   57,   -128, 0,    0,    0,
+                0,    0,    0,    0,    0,    0,    0,
+                0,    0,    33,   0,    0,    0,    -96,
+                -54,  -28,  -26
+            };
+            std::string s;
+            for (unsigned i = 0; i < sizeof(data) / sizeof(int); i++)
+            {
+                s += static_cast<char>(data[i]);
+            }
+            dump_test["1"] = s;
+            dump_test.dump(-1, ' ', true, nlohmann::json::error_handler_t::replace);
+        }
+    }
+
+    SECTION("issue #1447 - Integer Overflow (OSS-Fuzz 12506)")
+    {
+        json j = json::parse("[-9223372036854775808]");
+        CHECK(j.dump() == "[-9223372036854775808]");
+    }
 }
+
+#if not defined(JSON_NOEXCEPTION)
+TEST_CASE("regression tests, exceptions dependent")
+{
+    SECTION("issue #1340 - eof not set on exhausted input stream")
+    {
+        std::stringstream s("{}{}");
+        json j;
+        s >> j;
+        s >> j;
+        CHECK_THROWS_AS(s >> j, json::parse_error const&);
+        CHECK(s.eof());
+    }
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////
+// for #1642
+/////////////////////////////////////////////////////////////////////
+template <typename T> class array {};
+template <typename T> class object {};
+template <typename T> class string {};
+template <typename T> class number_integer {};
+template <typename T> class number_unsigned {};
+template <typename T> class number_float {};

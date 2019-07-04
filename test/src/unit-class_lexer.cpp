@@ -1,11 +1,12 @@
 /*
     __ _____ _____ _____
  __|  |   __|     |   | |  JSON for Modern C++ (test suite)
-|  |  |__   |  |  | | | |  version 3.0.1
+|  |  |__   |  |  | | | |  version 3.6.1
 |_____|_____|_____|_|___|  https://github.com/nlohmann/json
 
 Licensed under the MIT License <http://opensource.org/licenses/MIT>.
-Copyright (c) 2013-2017 Niels Lohmann <http://nlohmann.me>.
+SPDX-License-Identifier: MIT
+Copyright (c) 2013-2019 Niels Lohmann <http://nlohmann.me>.
 
 Permission is hereby  granted, free of charge, to any  person obtaining a copy
 of this software and associated  documentation files (the "Software"), to deal
@@ -26,17 +27,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "doctest_compatibility.h"
 
 #define private public
-#include "json.hpp"
+#include <nlohmann/json.hpp>
 using nlohmann::json;
+#undef private
 
+namespace
+{
 // shortcut to scan a string literal
 json::lexer::token_type scan_string(const char* s);
 json::lexer::token_type scan_string(const char* s)
 {
     return json::lexer(nlohmann::detail::input_adapter(s)).scan();
+}
 }
 
 TEST_CASE("lexer class")
@@ -173,15 +178,4 @@ TEST_CASE("lexer class")
         s += "\"";
         CHECK((scan_string(s.c_str()) == json::lexer::token_type::value_string));
     }
-
-    /* NOTE: to_unicode function has been removed
-    SECTION("to_unicode")
-    {
-        // lexer to call to_unicode on
-        json::lexer dummy_lexer("", 0);
-        CHECK(dummy_lexer.to_unicode(0x1F4A9) == "💩");
-        CHECK_THROWS_AS(dummy_lexer.to_unicode(0x200000), json::parse_error);
-        CHECK_THROWS_WITH(dummy_lexer.to_unicode(0x200000), "[json.exception.parse_error.103] parse error: code points above 0x10FFFF are invalid");
-    }
-    */
 }

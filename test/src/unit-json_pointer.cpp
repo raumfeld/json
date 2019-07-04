@@ -1,11 +1,12 @@
 /*
     __ _____ _____ _____
  __|  |   __|     |   | |  JSON for Modern C++ (test suite)
-|  |  |__   |  |  | | | |  version 3.0.1
+|  |  |__   |  |  | | | |  version 3.6.1
 |_____|_____|_____|_|___|  https://github.com/nlohmann/json
 
 Licensed under the MIT License <http://opensource.org/licenses/MIT>.
-Copyright (c) 2013-2017 Niels Lohmann <http://nlohmann.me>.
+SPDX-License-Identifier: MIT
+Copyright (c) 2013-2019 Niels Lohmann <http://nlohmann.me>.
 
 Permission is hereby  granted, free of charge, to any  person obtaining a copy
 of this software and associated  documentation files (the "Software"), to deal
@@ -26,11 +27,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "doctest_compatibility.h"
 
 #define private public
-#include "json.hpp"
+#include <nlohmann/json.hpp>
 using nlohmann::json;
+#undef private
 
 TEST_CASE("JSON pointers")
 {
@@ -38,7 +40,7 @@ TEST_CASE("JSON pointers")
     {
         CHECK_THROWS_AS(json::json_pointer("foo"), json::parse_error&);
         CHECK_THROWS_WITH(json::json_pointer("foo"),
-                          "[json.exception.parse_error.107] parse error at 1: JSON pointer must be empty or begin with '/' - was: 'foo'");
+                          "[json.exception.parse_error.107] parse error at byte 1: JSON pointer must be empty or begin with '/' - was: 'foo'");
 
         CHECK_THROWS_AS(json::json_pointer("/~~"), json::parse_error&);
         CHECK_THROWS_WITH(json::json_pointer("/~~"),
@@ -60,7 +62,7 @@ TEST_CASE("JSON pointers")
         {
             json v = {1, 2, 3, 4};
             json::json_pointer ptr("/10e");
-            CHECK_THROWS_AS(v[ptr], json::out_of_range);
+            CHECK_THROWS_AS(v[ptr], json::out_of_range&);
             CHECK_THROWS_WITH(v[ptr],
                               "[json.exception.out_of_range.404] unresolved reference token '10e'");
         }
@@ -437,6 +439,7 @@ TEST_CASE("JSON pointers")
                 })
         {
             CHECK(json::json_pointer(ptr).to_string() == ptr);
+            CHECK(std::string(json::json_pointer(ptr)) == ptr);
         }
     }
 
@@ -457,5 +460,138 @@ TEST_CASE("JSON pointers")
             j["/a12"_json_pointer] = 0;
             CHECK(j.is_object());
         }
+    }
+
+    SECTION("empty, push, pop and parent")
+    {
+        const json j =
+        {
+            {"", "Hello"},
+            {"pi", 3.141},
+            {"happy", true},
+            {"name", "Niels"},
+            {"nothing", nullptr},
+            {
+                "answer", {
+                    {"everything", 42}
+                }
+            },
+            {"list", {1, 0, 2}},
+            {
+                "object", {
+                    {"currency", "USD"},
+                    {"value", 42.99},
+                    {"", "empty string"},
+                    {"/", "slash"},
+                    {"~", "tilde"},
+                    {"~1", "tilde1"}
+                }
+            }
+        };
+
+        // empty json_pointer returns the root JSON-object
+        auto ptr = ""_json_pointer;
+        CHECK(ptr.empty());
+        CHECK(j[ptr] == j);
+
+        // simple field access
+        ptr.push_back("pi");
+        CHECK(!ptr.empty());
+        CHECK(j[ptr] == j["pi"]);
+
+        ptr.pop_back();
+        CHECK(ptr.empty());
+        CHECK(j[ptr] == j);
+
+        // object and children access
+        const std::string answer("answer");
+        ptr.push_back(answer);
+        ptr.push_back("everything");
+        CHECK(!ptr.empty());
+        CHECK(j[ptr] == j["answer"]["everything"]);
+
+        ptr.pop_back();
+        ptr.pop_back();
+        CHECK(ptr.empty());
+        CHECK(j[ptr] == j);
+
+        // push key which has to be encoded
+        ptr.push_back("object");
+        ptr.push_back("/");
+        CHECK(j[ptr] == j["object"]["/"]);
+        CHECK(ptr.to_string() == "/object/~1");
+
+        CHECK(j[ptr.parent_pointer()] == j["object"]);
+        ptr = ptr.parent_pointer().parent_pointer();
+        CHECK(ptr.empty());
+        CHECK(j[ptr] == j);
+        // parent-pointer of the empty json_pointer is empty
+        ptr = ptr.parent_pointer();
+        CHECK(ptr.empty());
+        CHECK(j[ptr] == j);
+
+        CHECK_THROWS_WITH(ptr.pop_back(),
+                          "[json.exception.out_of_range.405] JSON pointer has no parent");
+    }
+
+    SECTION("operators")
+    {
+        const json j =
+        {
+            {"", "Hello"},
+            {"pi", 3.141},
+            {"happy", true},
+            {"name", "Niels"},
+            {"nothing", nullptr},
+            {
+                "answer", {
+                    {"everything", 42}
+                }
+            },
+            {"list", {1, 0, 2}},
+            {
+                "object", {
+                    {"currency", "USD"},
+                    {"value", 42.99},
+                    {"", "empty string"},
+                    {"/", "slash"},
+                    {"~", "tilde"},
+                    {"~1", "tilde1"}
+                }
+            }
+        };
+
+        // empty json_pointer returns the root JSON-object
+        auto ptr = ""_json_pointer;
+        CHECK(j[ptr] == j);
+
+        // simple field access
+        ptr = ptr / "pi";
+        CHECK(j[ptr] == j["pi"]);
+
+        ptr.pop_back();
+        CHECK(j[ptr] == j);
+
+        // object and children access
+        const std::string answer("answer");
+        ptr /= answer;
+        ptr = ptr / "everything";
+        CHECK(j[ptr] == j["answer"]["everything"]);
+
+        ptr.pop_back();
+        ptr.pop_back();
+        CHECK(j[ptr] == j);
+
+        CHECK(ptr / ""_json_pointer == ptr);
+        CHECK(j["/answer"_json_pointer / "/everything"_json_pointer] == j["answer"]["everything"]);
+
+        // list children access
+        CHECK(j["/list"_json_pointer / 1] == j["list"][1]);
+
+        // push key which has to be encoded
+        ptr /= "object";
+        ptr = ptr / "/";
+        CHECK(j[ptr] == j["object"]["/"]);
+        CHECK(ptr.to_string() == "/object/~1");
     }
 }

@@ -1,11 +1,12 @@
 /*
     __ _____ _____ _____
  __|  |   __|     |   | |  JSON for Modern C++ (test suite)
-|  |  |__   |  |  | | | |  version 3.0.1
+|  |  |__   |  |  | | | |  version 3.6.1
 |_____|_____|_____|_|___|  https://github.com/nlohmann/json
 
 Licensed under the MIT License <http://opensource.org/licenses/MIT>.
-Copyright (c) 2013-2017 Niels Lohmann <http://nlohmann.me>.
+SPDX-License-Identifier: MIT
+Copyright (c) 2013-2019 Niels Lohmann <http://nlohmann.me>.
 
 Permission is hereby  granted, free of charge, to any  person obtaining a copy
 of this software and associated  documentation files (the "Software"), to deal
@@ -26,16 +27,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "doctest_compatibility.h"
+DOCTEST_GCC_SUPPRESS_WARNING("-Wfloat-equal")
 
 #define private public
-#include "json.hpp"
+#include <nlohmann/json.hpp>
 using nlohmann::json;
+#undef private
 
 #include <deque>
 #include <forward_list>
 #include <fstream>
 #include <list>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <valarray>
@@ -295,11 +299,11 @@ TEST_CASE("constructors")
         {
             json j{1};
 
-            CHECK_THROWS_AS((j.get<std::pair<int, int>>()), json::out_of_range);
+            CHECK_THROWS_AS((j.get<std::pair<int, int>>()), json::out_of_range&);
             CHECK_THROWS_WITH((j.get<std::pair<int, int>>()), "[json.exception.out_of_range.401] array index 1 is out of range");
-            CHECK_THROWS_AS((j.get<std::tuple<int, int>>()), json::out_of_range);
+            CHECK_THROWS_AS((j.get<std::tuple<int, int>>()), json::out_of_range&);
             CHECK_THROWS_WITH((j.get<std::tuple<int, int>>()), "[json.exception.out_of_range.401] array index 1 is out of range");
-            CHECK_THROWS_AS((j.get<std::array<int, 3>>()), json::out_of_range);
+            CHECK_THROWS_AS((j.get<std::array<int, 3>>()), json::out_of_range&);
             CHECK_THROWS_WITH((j.get<std::array<int, 3>>()), "[json.exception.out_of_range.401] array index 1 is out of range");
         }
 

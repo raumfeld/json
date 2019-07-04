@@ -10,6 +10,7 @@ fuzz-testing
 
 build
 build_coverage
+clang_analyze_build
 
 doc/xml
 doc/html
@@ -21,3 +22,4 @@ benchmarks/files/numbers/*.json
 cmake-build-debug
 
 test/test-*
+/.vs
